@@ -15,19 +15,19 @@ locals {
   atlantis_url_events = "${local.atlantis_url}/events"
 
   # Include only one group of secrets - for github, gitlab or bitbucket
-  has_secrets = var.atlantis_gitlab_user_token != "" || var.atlantis_github_user_token != "" || var.atlantis_bitbucket_user_token != ""
+  has_secrets = var.atlantis_gitlab_user_token != "" || var.atlantis_github_user_token != "" || var.atlantis_bitbucket_user_token != "" || var.atlantis_azuredevops_user_token != ""
 
-  secret_name_key = local.has_secrets ? var.atlantis_gitlab_user_token != "" ? "ATLANTIS_GITLAB_TOKEN" : var.atlantis_github_user_token != "" ? "ATLANTIS_GH_TOKEN" : "ATLANTIS_BITBUCKET_TOKEN" : "unknown_secret_name_key"
+  secret_name_key = local.has_secrets ? var.atlantis_gitlab_user_token != "" ? "ATLANTIS_GITLAB_TOKEN" : var.atlantis_github_user_token != "" ? "ATLANTIS_GH_TOKEN" : var.atlantis_bitbucket_user_token != "" ? "ATLANTIS_BITBUCKET_TOKEN" : "ATLANTIS_AZUREDEVOPS_TOKEN" : "unknown_secret_name_key"
 
-  secret_name_value_from = local.has_secrets ? var.atlantis_gitlab_user_token != "" ? var.atlantis_gitlab_user_token_ssm_parameter_name : var.atlantis_github_user_token != "" ? var.atlantis_github_user_token_ssm_parameter_name : var.atlantis_bitbucket_user_token_ssm_parameter_name : "unknown_secret_name_value"
+  secret_name_value_from = local.has_secrets ? var.atlantis_gitlab_user_token != "" ? var.atlantis_gitlab_user_token_ssm_parameter_name : var.atlantis_github_user_token != "" ? var.atlantis_github_user_token_ssm_parameter_name : var.atlantis_bitbucket_user_token != "" ?  var.atlantis_bitbucket_user_token_ssm_parameter_name : var.atlantis_azuredevops_user_token_ssm_parameter_name : "unknown_secret_name_value"
 
-  secret_webhook_key = local.has_secrets ? var.atlantis_gitlab_user_token != "" ? "ATLANTIS_GITLAB_WEBHOOK_SECRET" : var.atlantis_github_user_token != "" ? "ATLANTIS_GH_WEBHOOK_SECRET" : "ATLANTIS_BITBUCKET_WEBHOOK_SECRET" : "unknown_secret_webhook_key"
+  secret_webhook_key = local.has_secrets ? var.atlantis_gitlab_user_token != "" ? "ATLANTIS_GITLAB_WEBHOOK_SECRET" : var.atlantis_github_user_token != "" ? "ATLANTIS_GH_WEBHOOK_SECRET" : var.atlantis_bitbucket_user_token != "" ? "ATLANTIS_BITBUCKET_WEBHOOK_SECRET" : "ATLANTIS_AZUREDEVOPS_WEBHOOK_PASSWORD" : "unknown_secret_webhook_key"
 
   # determine if the alb has authentication enabled, otherwise forward the traffic unauthenticated
   alb_authenication_method = length(keys(var.alb_authenticate_oidc)) > 0 ? "authenticate-oidc" : length(keys(var.alb_authenticate_cognito)) > 0 ? "authenticate-cognito" : "forward"
 
   # Container definitions
-  container_definitions = var.custom_container_definitions == "" ? var.atlantis_bitbucket_user_token != "" ? module.container_definition_bitbucket.json_map_encoded_list : module.container_definition_github_gitlab.json_map_encoded_list : var.custom_container_definitions
+  container_definitions = var.custom_container_definitions == "" ? var.atlantis_bitbucket_user_token != "" ? module.container_definition_bitbucket.json_map_encoded_list : var.atlantis_azuredevops_user_token != "" ? module.container_definition_azuredevops.json_map_encoded_list : module.container_definition_github_gitlab.json_map_encoded_list : var.custom_container_definitions
 
   container_definition_environment = [
     {
@@ -67,6 +67,14 @@ locals {
       value = var.atlantis_bitbucket_base_url
     },
     {
+      name  = "ATLANTIS_AZUREDEVOPS_USER"
+      value = var.atlantis_azuredevops_user
+    },
+    {
+      name  = "ATLANTIS_AZUREDEVOPS_WEBHOOK_USER"
+      value = var.atlantis_azuredevops_webhook_user
+    },
+    {
       name  = "ATLANTIS_REPO_WHITELIST"
       value = join(",", var.atlantis_repo_whitelist)
     },
@@ -89,6 +97,14 @@ locals {
     {
       name      = local.secret_webhook_key
       valueFrom = var.webhook_ssm_parameter_name
+    },
+  ]
+  
+  # Azure requires basic auth for webhooks
+  container_definition_secrets_3 = [
+    {
+      name      = local.secret_webhook_key
+      valueFrom = var.atlantis_azuredevops_webhook_password_ssm_parameter_name
     },
   ]
 
@@ -152,6 +168,26 @@ resource "aws_ssm_parameter" "atlantis_bitbucket_user_token" {
   name  = var.atlantis_bitbucket_user_token_ssm_parameter_name
   type  = "SecureString"
   value = var.atlantis_bitbucket_user_token
+
+  tags = local.tags
+}
+
+resource "aws_ssm_parameter" "atlantis_azuredevops_user_token" {
+  count = var.atlantis_azuredevops_user_token != "" ? 1 : 0
+
+  name  = var.atlantis_azuredevops_user_token_ssm_parameter_name
+  type  = "SecureString"
+  value = var.atlantis_azuredevops_user_token
+
+  tags = local.tags
+}
+
+resource "aws_ssm_parameter" "atlantis_azuredevops_webhook_password" {
+  count = var.atlantis_azuredevops_webhook_password != "" ? 1 : 0
+
+  name  = var.atlantis_azuredevops_webhook_password_ssm_parameter_name
+  type  = "SecureString"
+  value = var.atlantis_azuredevops_webhook_password
 
   tags = local.tags
 }
@@ -392,7 +428,9 @@ data "aws_iam_policy_document" "ecs_task_access_secrets" {
       aws_ssm_parameter.webhook.*.arn,
       aws_ssm_parameter.atlantis_github_user_token.*.arn,
       aws_ssm_parameter.atlantis_gitlab_user_token.*.arn,
-    aws_ssm_parameter.atlantis_bitbucket_user_token.*.arn))
+      aws_ssm_parameter.atlantis_bitbucket_user_token.*.arn,
+      aws_ssm_parameter.atlantis_azuredevops_user_token.*.arn,
+      aws_ssm_parameter.atlantis_azuredevops_webhook_password.*.arn))
 
     actions = [
       "ssm:GetParameters",
@@ -415,7 +453,7 @@ data "aws_iam_policy_document" "ecs_task_access_secrets_with_kms" {
 }
 
 resource "aws_iam_role_policy" "ecs_task_access_secrets" {
-  count = var.atlantis_github_user_token != "" || var.atlantis_gitlab_user_token != "" || var.atlantis_bitbucket_user_token != "" ? 1 : 0
+  count = var.atlantis_github_user_token != "" || var.atlantis_gitlab_user_token != "" || var.atlantis_bitbucket_user_token != "" || var.atlantis_azuredevops_user_token != "" ? 1 : 0
 
   name = "ECSTaskAccessSecretsPolicy"
 
@@ -541,6 +579,63 @@ module "container_definition_bitbucket" {
 
   secrets = concat(
     local.container_definition_secrets_1,
+    var.custom_environment_secrets,
+  )
+}
+
+module "container_definition_azuredevops" {
+  source  = "cloudposse/ecs-container-definition/aws"
+  version = "v0.40.0"
+
+  container_name  = var.name
+  container_image = local.atlantis_image
+
+  container_cpu                = var.ecs_task_cpu
+  container_memory             = var.ecs_task_memory
+  container_memory_reservation = var.container_memory_reservation
+
+  user                     = var.user
+  ulimits                  = var.ulimits
+  entrypoint               = var.entrypoint
+  command                  = var.command
+  working_directory        = var.working_directory
+  repository_credentials   = var.repository_credentials
+  docker_labels            = var.docker_labels
+  start_timeout            = var.start_timeout
+  stop_timeout             = var.stop_timeout
+  container_depends_on     = var.container_depends_on
+  essential                = var.essential
+  readonly_root_filesystem = var.readonly_root_filesystem
+  mount_points             = var.mount_points
+  volumes_from             = var.volumes_from
+
+  port_mappings = [
+    {
+      containerPort = var.atlantis_port
+      hostPort      = var.atlantis_port
+      protocol      = "tcp"
+    },
+  ]
+
+  log_configuration = {
+    logDriver = "awslogs"
+    options = {
+      awslogs-region        = data.aws_region.current.name
+      awslogs-group         = aws_cloudwatch_log_group.atlantis.name
+      awslogs-stream-prefix = "ecs"
+    }
+    secretOptions = []
+  }
+  firelens_configuration = var.firelens_configuration
+
+  environment = concat(
+    local.container_definition_environment,
+    var.custom_environment_variables,
+  )
+
+  secrets = concat(
+    local.container_definition_secrets_1,
+    local.container_definition_secrets_3,
     var.custom_environment_secrets,
   )
 }
